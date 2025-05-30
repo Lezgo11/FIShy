@@ -26,8 +26,8 @@ def decompress_msr(filename):
     # Read off-diagonal elements
     for i in range(3):
         filling_num = vals[i+n+1]
-        fill_col = int(ids[i+1])-int(ids[i])
-        diag[fill_col, int(ids[i+n+1])] = filling_num
+        fill_col = ids[i+1]-ids[i]
+        diag[fill_col, ids[i+n+1]] = filling_num
     
     return diag
 
