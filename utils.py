@@ -48,3 +48,39 @@ def load_matrix(filename):
             l.append(row)
     # Convert list to numpy array
     return matrix
+
+def conjugate_gradient(A, b, x0, x_true, tol=1e-8, max_iter=None):
+    """
+    Conjugate Gradient method without preconditioning.
+    Also tracks residuals and A-norm error.
+    """
+    x = x0.copy()
+    r = b - A @ x
+    p = r.copy()
+    rsold = np.dot(r, r)
+    
+    r_norms = [np.sqrt(rsold)]
+    e_A_norms = [np.sqrt((x - x_true).T @ A @ (x - x_true))]
+
+    if max_iter is None:
+        max_iter = len(b)
+
+    for i in range(max_iter):
+        Ap = A @ p
+        alpha = rsold / np.dot(p, Ap)
+        x = x + alpha * p
+        r = r - alpha * Ap
+        rsnew = np.dot(r, r)
+        
+        r_norms.append(np.sqrt(rsnew))
+        e = x - x_true
+        e_A_norm = np.sqrt(e.T @ A @ e)
+        e_A_norms.append(e_A_norm)
+
+        if np.sqrt(rsnew) / np.sqrt(r_norms[0]) < tol:
+            break
+
+        p = r + (rsnew / rsold) * p
+        rsold = rsnew
+
+    return x, r_norms, e_A_norms
