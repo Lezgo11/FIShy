@@ -1,5 +1,5 @@
 # FIShy
-_by Lez and German_
+_by Lez_
 
 Some FIS smelly shennanigans aka the Project 1 files.
 
