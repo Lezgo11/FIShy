@@ -1,6 +1,57 @@
 import numpy as np
 #---------- MSR decomp.
-def decompress_msr(filename):
+def msr_to_matrix(filename):
+    # Read data from the file
+    with open(filename, 'r') as f:
+        # Read the first line as a string
+        SorN = [next(f)]
+        lines = f.readlines()
+    SorN= SorN[0].strip().split()
+    header = lines[0].strip().split()
+    n = int(header[0])
+    fillings = []
+    data = [line.strip().split() for line in lines[1:]]
+    ids = np.array([int(item[0]) for item in data])
+    ids_rows = ids[0:n+1]  # Extracting row indices
+    ids_cols = ids[n+1:len(ids)]  # Extract column indices
+    ids_cols = ids_cols-1  # Adjust column indices to be zero-based
+    #print("Column indices:", ids_cols)
+
+    for i in range(len(ids_rows) - 1): # only consider the row elements
+        fillings.append(ids_rows[i+1] - ids_rows[i])  # append filling numbers
+
+    #print("amoun of nonzero values per row:", fillings)
+
+    vals = np.array([float(item[1]) for item in data])  # Convert to floats and extract values of matrix
+
+    diag = np.diag(vals[0:n]) # Read diagonal elements
+    vals = vals[n+1:len(vals)]  # Exclude diagonal elements from vals
+    #print(f"values: {vals}")
+
+    matrix = np.zeros((n, n)) # Initialize the matrix
+
+
+
+    dict_fillings = {}  # Initialize dict_fillings as an empty dictionary
+    for i in range(len(fillings)):
+        dict_fillings[i] = fillings[i]
+
+    # Use dictionaries to fill the matrix
+    for i in range(n):
+        if dict_fillings[i] == 0:
+            continue  # Skip rows with no fillings
+        start_idx = sum(fillings[:i])  # Calculate the starting index for the current row
+        end_idx = start_idx + fillings[i]  # Calculate the ending index for the current row
+        for idx, j in enumerate(ids_cols[start_idx:end_idx]):
+            if idx < len(vals):  # Ensure we don't exceed the length of vals
+                matrix[i, j] = vals[start_idx + idx]
+    if SorN[0] == "s":
+        matrix = matrix + matrix.T  # Make the matrix symmetric
+
+    matrix = matrix + diag
+
+    return matrix
+
     """
     Decompress a matrix stored in Modified Compressed Sparse Row (MSR) format from a text file.
     Args:
@@ -32,7 +83,6 @@ def decompress_msr(filename):
     
     return diag
 
-def msr_to_dense(filename):
     # Read data from the file
     with open(filename, 'r') as f:
         next(f)
@@ -131,7 +181,7 @@ def gmres():
 # 4. TODO: Add GMRES with preconditioning
 #---------- CG
 # 5. Conjugate Gradient Method
-def conjugate_gradient(A, b, x0, x_true, tol=1e-8, max_iter=None):
+def conjugate_gradient(A, b, x0, x_true, tol = 1e-8, max_iter=None):
     """
     Conjugate Gradient method without preconditioning.
     Also tracks residuals and A-norm error.
