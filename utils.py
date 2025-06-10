@@ -161,11 +161,11 @@ def GetKrylovw(A, v0, k):
         H: Hessenberg matrix (k+1 x k)
     """
     v0 = v0.reshape(-1)  # Ensure v0 is a 1D array
-    inputtype = A.dtype.type
+    n = len(v0)
+    #inputtype = A.dtype.type
     
-    n = A.shape[0]
-    V = np.zeros((n, k + 1), dtype=inputtype)  # +1 for possible breakdown
-    H = np.zeros((k + 1, k), dtype=inputtype)
+    V = np.zeros((n, k + 1), dtype=v0.dtype)  # +1 for possible breakdown
+    H = np.zeros((k + 1, k), dtype=v0.dtype)
     
     V[:, 0] = v0 / np.linalg.norm(v0)
     
@@ -180,45 +180,6 @@ def GetKrylovw(A, v0, k):
         V[:, m + 1] = vt / H[m + 1, m]
 
     return V,H
-
-#Stinky krylov attempt below!!!!!!!
-def GetKrylov(A, v0, k):
-    """
-    Arnoldi algorithm to compute a Krylov approximation of matrix A.
-    
-    Parameters:
-        A : ndarray
-            Square matrix of shape (n, n)
-        v0 : ndarray
-            Initial vector of shape (n,) or (n, 1)
-        k : int
-            Number of Krylov steps
-            
-    Returns:
-        V : ndarray
-            Matrix of orthonormal vectors of shape (n, k+1)
-        H : ndarray
-            Upper Hessenberg matrix of shape (k+1, k)
-    """
-    v0 = v0.reshape(-1, 1)
-    V = v0 / np.linalg.norm(v0)
-    V = V.astype(A.dtype)
-    V_list = [V]
-    H = np.zeros((k + 1, k), dtype=A.dtype)
-
-    for m in range(k):
-        w = A @ V_list[m]
-        for j in range(m + 1):
-            H[j, m] = np.conj(V_list[j].T) @ w
-            w = w - H[j, m] * V_list[j]
-        H[m + 1, m] = np.linalg.norm(w)
-        if H[m + 1, m] < 1e-14:
-            break  # early termination
-        V_list.append(w / H[m + 1, m])
-        
-    V = np.hstack(V_list)
-    return V, H
-
 
 # 3. TODO: Add GMRES 
 def gmres():
