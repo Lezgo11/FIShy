@@ -1,4 +1,7 @@
 import numpy as np
+from scipy.sparse import csc_matrix
+from scipy.sparse.linalg import spilu
+
 #---------- MSR decomp.
 def msr_to_matrix(filename):
     # Read data from the file
@@ -51,89 +54,6 @@ def msr_to_matrix(filename):
     matrix = matrix + diag
 
     return matrix
-
-    """
-    Decompress a matrix stored in Modified Compressed Sparse Row (MSR) format from a text file.
-    Args:
-        filename (str): Path to the text file containing the MSR format data     
-    Returns:
-        numpy.ndarray: The decompressed matrix
-    """
-
-    # Read data from the file
-    with open(filename, 'r') as f:
-        next(f)
-        lines = f.readlines()
-    
-    
-    header = lines[0].strip().split()
-    n = int(header[0])
-
-    data = [line.strip().split() for line in lines[1:]]
-    ids = np.array([int(item[0]) for item in data])  # Convert to integers
-    vals = np.array([float(item[1]) for item in data])  # Convert to floats
-
-    # Initialize the matrix
-    diag = np.diag(vals[0:n]) # Read diagonal elements
-    # Read off-diagonal elements
-    for i in range(3):
-        filling_num = vals[i+n+1]
-        fill_col = ids[i+1]-ids[i]
-        diag[fill_col, ids[i+n+1]] = filling_num
-    
-    return diag
-
-    # Read data from the file
-    with open(filename, 'r') as f:
-        next(f)
-        lines = f.readlines()
-
-    lines = lines[0].strip().split('\n')
-    symmetry = lines[0].strip()
-    n, nnz = map(int, lines[1].split())
-    
-    # Parse the MSR arrays
-    val = []
-    bindx = []
-    for line in lines[2:2+n+1]:  # First n+1 entries are diagonal + marker
-        parts = line.split()
-        bindx.append(int(parts[0]))
-        if len(parts) > 1:
-            val.append(float(parts[1]))
-    
-    # Remaining entries are off-diagonal values and their column indices
-    for line in lines[2+n+1:2+nnz]:
-        parts = line.split()
-        bindx.append(int(parts[0]))
-        if len(parts) > 1:
-            val.append(float(parts[1]))
-    
-    # Initialize dense matrix with zeros
-    dense = [[0.0 for _ in range(n)] for _ in range(n)]
-    
-    # Fill diagonal elements
-    for i in range(n):
-        dense[i][i] = val[i]
-    
-    # Process off-diagonal elements
-    off_diag_start = bindx[0]  # First entry in bindx points to where off-diag values start
-    off_diag_val = val[n+1:]   # Off-diag values start after diagonal + marker
-    
-    # The bindx entries before off_diag_start give row pointers
-    row_ptr = bindx[:n+1]
-    
-    for i in range(n):
-        start = row_ptr[i] - off_diag_start
-        end = row_ptr[i+1] - off_diag_start if i+1 < len(row_ptr) else len(off_diag_val)
-        
-        for idx in range(start, end):
-            col = bindx[off_diag_start + idx] - 1  # Convert to 0-based index
-            value = off_diag_val[idx]
-            dense[i][col] = value
-            if symmetry == 's' and i != col:  # Mirror for symmetric matrices
-                dense[col][i] = value
-    
-    return dense
 #---------- GMRES
 
 # 1. Make system of equations Ax=b
@@ -186,7 +106,51 @@ def gmres():
     """
     Generalized Minimal Residual Method (GMRES) for solving linear systems.
     """
-    
+
+    # Load MSR and get full matrix
+    A_msr = msr_to_matrix(msr_filename)
+    A, b, x_true, x0 = make_system(A_msr)
+
+    # Convert full matrix to MSR format
+    j_m, v_m = msr_to_matrix(A)
+
+    # Initial residual
+    r0 = b - MSR_product(j_m, v_m, x0, False)
+
+    # Preconditioning
+    m_matrix = precon_matrix(j_m, v_m, precon_method, len(b))
+    r0_precon = precon_lin_sys(m_matrix, r0, precon_method)
+    norm_r0_precon = np.linalg.norm(r0_precon)
+
+    relative_residual_iteration = 1e4
+    dimension_krylov = 10
+    r_residual_list = []
+    max_inner_product_list = []
+
+    while (relative_residual_iteration > relative_residual) and (dimension_krylov < max_iterations):
+        # Expand Krylov dimension by 10
+        dimension_krylov += 10
+
+        # Arnoldi + preconditioning
+        V, H, max_dot_product = arnoldi_alg(j_m, v_m, r0_precon, dimension_krylov, m_matrix, precon_method)
+        max_inner_product_list.append(max_dot_product)
+
+        # Givens rotations
+        H_tri, g_vector = givens_rotation(H, norm_r0_precon)
+        H_tri = H_tri[:-1]  # Remove last row for square system
+        residual = abs(g_vector[-1])
+        relative_residual_iteration = residual / norm_r0_precon
+        r_residual_list.append(relative_residual_iteration)
+
+    # Backward solve
+    y = backward_subs(H_tri, g_vector[:-1])
+    x = x0 + V @ y
+
+    return x, r_residual_list, max_inner_product_list
+
+
+
+
 # 4. TODO: Add GMRES with preconditioning
 #---------- CG
 # 5. Conjugate Gradient Method
@@ -244,3 +208,258 @@ def load_matrix(filename):
             l.append(row)
     # Convert list to numpy array
     return matrix
+
+
+
+#Givens rotations
+def givens_rotation(hessenber_m_func , norm_v_o):
+    H_m = hessenber_m_func.copy()
+    m = len(H_m[:,0])-1
+    g = np.zeros(m+1)
+    g[0] = norm_v_o
+    for r in range(m):
+        h = (H_m[r,r]**2 +H_m[r+1,r]**2)**(0.5)
+        c = H_m[r,r]/h
+        s = H_m[r+1,r]/h
+        rotation_m = np.array([[c, s], [-s, c]])
+        g[r:r+2] = np.matmul(rotation_m,g[r:r+2])
+        H_m[r,r] = h
+        H_m[r+1,r] = 0
+        for j in range (r+1,m):
+            H_m[r:r+2,j] = np.matmul(rotation_m,H_m[r:r+2,j])
+    return(H_m , g)
+
+#-
+# Backward substitution
+def backward_subs(m_function, b_vector):
+    matrix = m_function.copy()
+    x_sol = np.zeros(len(b_vector))
+    m = len(b_vector)
+    sum = 0
+    for i in range (m):
+        sum += b_vector[-1-i]
+        for j in range(i):
+            sum -= x_sol[-1-j]*matrix[-1-i,-1-j]
+        if matrix[-1-i,-1-i] == 0:
+            print("Matrix is singular")
+        else:
+            x_sol[-1-i] = sum/matrix[-1-i,-1-i]
+            sum = 0
+    return(x_sol)
+
+def precon_lin_sys(matrix_m, b_precon_sys, precon_method):
+    size = len(b_precon_sys)
+    x_sol = np.zeros(size)
+    if precon_method == "identity":
+        x_sol = b_precon_sys
+    elif precon_method == "jacobi":
+        matrix_func = matrix_m.copy()
+        x_sol = np.multiply(np.reciprocal(matrix_func), b_precon_sys)
+    elif precon_method == "gauss":
+        matrix_func = matrix_m.copy()
+        x_sol = foward_subs(matrix_func , b_precon_sys)
+    return(x_sol)
+
+
+def arnoldi_alg (jm, vm, v_0, m, matrix_m, precon_method):
+    hessenberg_m = np.zeros((m+1,m))
+    orthonormal_m = np.zeros((len(v_0),m))
+    v_next = v_0 / LA.norm(v_0)
+    for j in range(m):
+        orthonormal_m[:,j] = v_next
+        v_next = MSR_product(jm, vm, orthonormal_m[:,j], False)
+        v_next = precon_lin_sys(matrix_m , v_next, precon_method)
+        for i in range (j+1):
+            hessenberg_m[i,j] = np.dot(v_next, orthonormal_m[:,i])
+            v_next -= hessenberg_m[i,j]*orthonormal_m[:,i]
+        dot_product_max = 0
+        for s in range (j):
+            dot_product_j = np.dot(v_next,orthonormal_m[:,s])
+            if dot_product_j > dot_product_max:
+                dot_product_max = dot_product_j
+            
+        hessenberg_m[j+1,j] = LA.norm(v_next)
+        if LA.norm(v_next) == 0:
+            print("Norm equal to zero")
+        else:
+            v_next = v_next/LA.norm(v_next)
+    return(orthonormal_m, hessenberg_m, dot_product_max)
+
+
+def MSR_product(jm, vm, x, bool):
+    #jm -= 1- Let CSR do this index alignment.
+    jm_msr = jm.copy()
+    vm_msr = vm.copy()
+    x_msr = x.copy()
+    diagonal = vm_msr[0: len(x_msr)]
+    v_subarray = vm_msr[len(x_msr)+1: len(vm_msr)]
+    ia_array = jm_msr[0:len(x_msr)+1]
+    ia_array -= len(x_msr)+1
+    j_array = jm[len(x_msr)+1:len(jm_msr)]
+    if bool == False:
+        y_offdiagonal = CSR_product(ia_array, j_array, v_subarray, x)
+    else:
+        y_offdiagonal = CSR_product(ia_array, j_array, v_subarray, x) + CSC_product(ia_array, j_array, v_subarray, x)
+
+    y_diagonal = diagonal*x_msr
+    return(y_offdiagonal+y_diagonal)
+
+
+def ilu0(A):
+    """
+    Incomplete LU factorization (ILU(0)) for a dense square matrix A.
+    Only keeps elements in L and U where A has non-zero entries.
+    """
+    A = A.copy()
+    n = A.shape[0]
+    L = np.eye(n)
+    U = np.zeros_like(A)
+
+    for i in range(n):
+        for j in range(n):
+            if A[i, j] == 0:
+                continue
+            if j < i:
+                s = sum(L[i, k] * U[k, j] for k in range(j))
+                if U[j, j] == 0:
+                    raise ZeroDivisionError(f"Zero pivot encountered at U[{j},{j}]")
+                L[i, j] = (A[i, j] - s) / U[j, j]
+            else:
+                s = sum(L[i, k] * U[k, j] for k in range(i))
+                U[i, j] = A[i, j] - s
+
+    return L, U
+
+
+def gmres_2(msr_filename, relative_residual=1e-8, k_dim=10, max_iterations=600, precon_method="identity"):
+    A_msr = msr_to_matrix(msr_filename)
+    A, b, x_true, x0 = make_system(A_msr)
+
+    # ILU preconditioner object
+    ilu_solver = None
+    # Preconditioner matrix generator
+    def precon_matrix(A, precon_method):
+        if precon_method == "identity":
+            return np.eye(A.shape[0])
+        elif precon_method == "jacobi":
+            return np.diag(1.0 / np.diag(A))
+        elif precon_method == "gauss":
+            L = np.tril(A)
+            return np.linalg.inv(L)
+        elif precon_method == "ilu":
+            L, U = ilu0(A)
+            return (L,U)
+        else:
+            raise ValueError("Unknown preconditioner")
+
+    # Apply preconditioner (as a matrix-vector product)
+    def apply_preconditioner(M, r):
+        if precon_method == "ilu":
+            L, U = M
+            y = forward_substitution(L, r)
+            return backward_substitution(U, y)
+        else:
+            return  M @ r
+
+    def forward_substitution(L, b):
+        n = len(b)
+        y = np.zeros_like(b)
+        for i in range(n):
+            y[i] = b[i] - np.dot(L[i, :i], y[:i])
+        return y
+    
+    def backward_substitution(U, y):
+        n = len(y)
+        x = np.zeros_like(y)
+        for i in reversed(range(n)):
+            if U[i, i] == 0:
+                raise ZeroDivisionError(f"Zero pivot encountered at U[{i},{i}]")
+            x[i] = (y[i] - np.dot(U[i, i+1:], x[i+1:])) / U[i, i]
+        return x
+
+    # Modified Arnoldi process with preconditioning
+    def arnoldi_with_precon(A, M, r0_precon, k):
+        n = len(r0_precon)
+        V = np.zeros((n, k+1))
+        H = np.zeros((k+1, k))
+        max_inner = 0.0
+
+        beta = np.linalg.norm(r0_precon)
+        V[:, 0] = r0_precon / beta
+
+        for j in range(k):
+            z = apply_preconditioner(M, A @ V[:, j])  # Apply preconditioner to Av_j
+
+            for i in range(j + 1):
+                H[i, j] = np.dot(V[:, i], z)
+                z = z - H[i, j] * V[:, i]
+                max_inner = max(max_inner, abs(H[i, j]))
+
+            H[j+1, j] = np.linalg.norm(z)
+            if H[j+1, j] != 0 and j + 1 < k:
+                V[:, j+1] = z / H[j+1, j]
+
+        return V[:, :k], H[:k+1, :k], max_inner
+
+    # Givens rotation QR method
+    def givens_rotation(H, beta):
+        m, n = H.shape
+        R = np.copy(H)
+        cs = np.zeros(n)
+        sn = np.zeros(n)
+        g = np.zeros(m)
+        g[0] = beta
+
+        for i in range(n):
+            r = np.hypot(R[i, i], R[i+1, i])
+            cs[i] = R[i, i] / r
+            sn[i] = R[i+1, i] / r
+            R[i, i] = r
+            R[i+1, i] = 0.0
+
+            g[i+1] = -sn[i] * g[i]
+            g[i] = cs[i] * g[i]
+
+            for j in range(i+1, n):
+                temp = cs[i] * R[i, j] + sn[i] * R[i+1, j]
+                R[i+1, j] = -sn[i] * R[i, j] + cs[i] * R[i+1, j]
+                R[i, j] = temp
+
+        return R[:n, :], g[:n+1]
+
+    # Back substitution for upper-triangular systems
+    def backward_subs(R, g):
+        n = R.shape[1]
+        x = np.zeros(n)
+        for i in reversed(range(n)):
+            x[i] = (g[i] - np.dot(R[i, i+1:], x[i+1:])) / R[i, i]
+        return x
+
+    # Begin GMRES loop
+    r0 = b - A @ x0
+    M = precon_matrix(A, precon_method)
+    r0_precon = apply_preconditioner(M, r0)
+    norm_r0_precon = np.linalg.norm(r0_precon)
+
+    rel_residual = 1e4
+    residuals = []
+    inner_products = []
+    starting_k = 1
+
+    while rel_residual > relative_residual and starting_k < max_iterations:
+        V, H, max_ip = arnoldi_with_precon(A, M, r0_precon, starting_k)
+        inner_products.append(max_ip)
+
+        R, g = givens_rotation(H, norm_r0_precon)
+        rel_residual = abs(g[-1]) / norm_r0_precon
+        residuals.append(rel_residual)
+        starting_k += k_dim
+
+    y = backward_subs(R, g[:-1])
+    x = x0 + V @ y
+
+    x_axis = np.arange(k_dim,k_dim*(len(residuals)+1), k_dim)
+
+    return x, residuals, x_axis
+
+
