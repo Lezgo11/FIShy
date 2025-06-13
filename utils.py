@@ -188,7 +188,6 @@ def conjugate_gradient(A, b, x0, x_true, tol = 1e-8, max_iter=None):
         rsold = rsnew
 
     return x, r_norms, e_A_norms
-# 6. #TODO: add preconditioned CG
 
 #---------- Other tests
 def load_matrix(filename):
@@ -449,7 +448,6 @@ def gmres_2(msr_filename, relative_residual=1e-8, k_dim=10, max_iterations=600, 
     while rel_residual > relative_residual and starting_k < max_iterations:
         V, H, max_ip = arnoldi_with_precon(A, M, r0_precon, starting_k)
         inner_products.append(max_ip)
-
         R, g = givens_rotation(H, norm_r0_precon)
         rel_residual = abs(g[-1]) / norm_r0_precon
         residuals.append(rel_residual)
